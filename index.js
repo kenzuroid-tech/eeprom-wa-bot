@@ -26,15 +26,24 @@ mongoose.connect(process.env.MONGODB_URI)
         const client = new Client({
             authStrategy: new RemoteAuth({
                 store: store,
-                backupSyncIntervalMs: 300000
+                backupSyncIntervalMs: 5000 // Backup setiap 5 detik
             }),
             puppeteer: {
                 args: ['--no-sandbox', '--disable-setuid-sandbox']
             }
         });
 
-        client.on('remote_session_saved', () => {
+        let sessionSaved = false;
+        client.on('remote_session_saved', async () => {
             console.log('✅ Sesi WhatsApp berhasil disimpan ke MongoDB!');
+            sessionSaved = true;
+            // Jika bot sudah selesai kirim pesan, langsung matikan
+            if (doneReminding) {
+                console.log('👋 Sesi tersimpan. Bot mematikan diri sendiri.');
+                await client.destroy();
+                await mongoose.disconnect();
+                process.exit(0);
+            }
         });
 
         client.on('qr', (qr) => {
@@ -42,19 +51,30 @@ mongoose.connect(process.env.MONGODB_URI)
             qrcode.generate(qr, { small: true });
         });
 
+        let doneReminding = false;
         client.on('ready', async () => {
-            console.log('✅ Bot WhatsApp berhasil terhubung di GitHub Actions!');
+            console.log('✅ Bot WhatsApp berhasil terhubung!');
             console.log('🔄 Menjalankan pengecekan task...');
 
             await checkAndSendReminders(client);
+            doneReminding = true;
 
-            console.log('⏳ Tunggu 15 detik agar sesi tersimpan ke MongoDB...');
-            setTimeout(async () => {
-                console.log('👋 Bot selesai, mematikan diri sendiri.');
+            if (sessionSaved) {
+                // Sesi sudah tersimpan, langsung matikan
+                console.log('👋 Sesi sudah tersimpan. Bot mematikan diri sendiri.');
                 await client.destroy();
                 await mongoose.disconnect();
                 process.exit(0);
-            }, 15000);
+            } else {
+                console.log('⏳ Menunggu sesi tersimpan ke MongoDB...');
+                // Timeout maksimal 2 menit jika sesi tidak tersimpan
+                setTimeout(async () => {
+                    console.log('⚠️ Timeout! Mematikan bot paksa.');
+                    await client.destroy();
+                    await mongoose.disconnect();
+                    process.exit(0);
+                }, 120000);
+            }
         });
 
         client.initialize();
