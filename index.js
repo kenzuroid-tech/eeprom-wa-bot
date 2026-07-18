@@ -26,7 +26,7 @@ mongoose.connect(process.env.MONGODB_URI)
         const client = new Client({
             authStrategy: new RemoteAuth({
                 store: store,
-                backupSyncIntervalMs: 5000 // Backup setiap 5 detik
+                backupSyncIntervalMs: 60000 // Backup setiap 1 menit (minimum)
             }),
             puppeteer: {
                 args: ['--no-sandbox', '--disable-setuid-sandbox']
