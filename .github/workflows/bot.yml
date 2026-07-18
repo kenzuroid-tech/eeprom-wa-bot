@@ -17,7 +17,7 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '20' # Menggunakan versi node terbaru
+        node-version: '22' # Menggunakan versi node 22 agar support WebSocket Supabase
         cache: 'npm'
         
     - name: Install Dependencies
