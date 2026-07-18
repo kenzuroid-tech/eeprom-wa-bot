@@ -1,0 +1,180 @@
+require('dotenv').config();
+const { Client, RemoteAuth } = require('whatsapp-web.js');
+const { MongoStore } = require('wwebjs-mongo');
+const mongoose = require('mongoose');
+const qrcode = require('qrcode-terminal');
+const { createClient } = require('@supabase/supabase-js');
+const cron = require('node-cron');
+
+// Init Supabase
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_KEY;
+
+if (!supabaseUrl || !supabaseKey) {
+    console.error('❌ Supabase URL atau Key belum disetting di .env');
+    process.exit(1);
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+// MongoDB Setup
+const MONGODB_URI = process.env.MONGODB_URI;
+if (!MONGODB_URI) {
+    console.error('❌ MONGODB_URI belum disetting di .env');
+    process.exit(1);
+}
+
+let client;
+
+mongoose.connect(MONGODB_URI).then(() => {
+    console.log('📦 Terhubung ke MongoDB Atlas!');
+    const store = new MongoStore({ mongoose: mongoose });
+    
+    // Init WhatsApp Client
+    client = new Client({
+        authStrategy: new RemoteAuth({
+            store: store,
+            backupSyncIntervalMs: 300000
+        }),
+        puppeteer: {
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
+        }
+    });
+
+    client.on('remote_session_saved', () => {
+        console.log('✅ Sesi WhatsApp berhasil disimpan ke MongoDB!');
+    });
+
+    client.on('qr', (qr) => {
+        console.log('📱 Silakan scan QR code di bawah ini menggunakan WhatsApp:');
+        qrcode.generate(qr, { small: true });
+    });
+
+    client.on('ready', () => {
+        console.log('✅ Bot WhatsApp berhasil terhubung!');
+
+        // Ambil jadwal dari .env, default jam 19:00 setiap hari
+        const schedule = process.env.CRON_SCHEDULE || '0 19 * * *';
+        console.log(`⏰ Menjadwalkan cron job pengingat pada: ${schedule}`);
+
+        cron.schedule(schedule, async () => {
+            console.log('🔄 Menjalankan pengecekan task...');
+            await checkAndSendReminders();
+        });
+
+        // Opsional: Cek langsung saat bot nyala (untuk testing)
+        // checkAndSendReminders();
+    });
+
+    client.initialize();
+}).catch(err => {
+    console.error('❌ Gagal terhubung ke MongoDB:', err.message);
+});
+
+/**
+ * Fungsi untuk mengecek task dan mengirim pengingat
+ */
+async function checkAndSendReminders() {
+    try {
+        // 1. Ambil task yang belum selesai dan memiliki deadline
+        const { data: tasks, error: tasksError } = await supabase
+            .from('v_tasks')
+            .select('*')
+            .not('status', 'in', '("done","cancelled")')
+            .not('deadline', 'is', null)
+            .not('assigned_to', 'is', null);
+
+        if (tasksError) throw tasksError;
+
+        if (!tasks || tasks.length === 0) {
+            console.log('✨ Tidak ada task yang perlu diingatkan saat ini.');
+            return;
+        }
+
+        // 2. Ambil profil untuk mendapatkan nomor WhatsApp
+        // Ambil ID assignee yang unik
+        const assigneeIds = [...new Set(tasks.map(t => t.assigned_to))];
+
+        const { data: profiles, error: profilesError } = await supabase
+            .from('profiles')
+            .select('id, full_name, phone')
+            .in('id', assigneeIds);
+
+        if (profilesError) throw profilesError;
+
+        // Bikin map profil supaya mudah dicari
+        const profileMap = {};
+        profiles.forEach(p => {
+            if (p.phone) {
+                // Pastikan format nomor HP benar untuk WA (berawalan 62, hilangkan awalan 0, dll)
+                let phone = p.phone.replace(/\D/g, ''); // Hapus karakter non-digit
+                if (phone.startsWith('0')) phone = '62' + phone.substring(1);
+                profileMap[p.id] = { ...p, wa_number: `${phone}@c.us` };
+            }
+        });
+
+        // 3. Kelompokkan task berdasarkan orangnya (supaya tidak di-spam 1 task = 1 pesan)
+        const tasksByUser = {};
+        const today = new Date();
+
+        tasks.forEach(task => {
+            const userProfile = profileMap[task.assigned_to];
+            if (!userProfile) return; // Skip jika tidak ada nomor HP
+
+            // Hitung sisa hari
+            const deadline = new Date(task.deadline);
+            const diffTime = deadline - today;
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+            // Hanya ingatkan jika deadline tinggal <= 3 hari atau sudah lewat (minus)
+            if (diffDays <= 3) {
+                if (!tasksByUser[task.assigned_to]) {
+                    tasksByUser[task.assigned_to] = {
+                        profile: userProfile,
+                        tasks: []
+                    };
+                }
+
+                tasksByUser[task.assigned_to].tasks.push({
+                    ...task,
+                    diffDays
+                });
+            }
+        });
+
+        // 4. Kirim pesan
+        for (const userId in tasksByUser) {
+            const { profile, tasks } = tasksByUser[userId];
+
+            let message = `🤖 *[BOT HUMAS EEPROM]*\n\n`;
+            message += `Halo *${profile.full_name}*! 👋\n`;
+            message += `Mengingatkan ada *${tasks.length} tugas* yang harus kamu selesaikan nih:\n\n`;
+
+            tasks.forEach((t, index) => {
+                const programName = t.program_name || 'Lainnya (Tanpa Program)';
+                const dateStr = new Date(t.deadline).toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+                let timeStatus = t.diffDays < 0 ? `❗ *Terlambat ${Math.abs(t.diffDays)} hari*` :
+                    t.diffDays === 0 ? `⚠️ *Hari ini*` :
+                        `⏳ H-${t.diffDays}`;
+
+                message += `${index + 1}. *${t.title}*\n`;
+                message += `   🏢 ${programName}\n`;
+                message += `   ⏰ ${dateStr} (${timeStatus})\n\n`;
+            });
+
+            message += `Yuk segera dikerjakan dan update statusnya di website ya! Semangat! 🔥\n\n`;
+            message += `_Pesan ini dikirim otomatis oleh sistem_`;
+
+            try {
+                await client.sendMessage(profile.wa_number, message);
+                console.log(`✅ Berhasil mengirim pengingat ke ${profile.full_name} (${profile.wa_number})`);
+            } catch (err) {
+                console.error(`❌ Gagal mengirim ke ${profile.wa_number}:`, err.message);
+            }
+        }
+
+    } catch (err) {
+        console.error('Error saat mengecek task:', err.message);
+    }
+}
