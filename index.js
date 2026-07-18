@@ -1,7 +1,5 @@
 require('dotenv').config();
-const { Client, RemoteAuth } = require('whatsapp-web.js');
-const { MongoStore } = require('wwebjs-mongo');
-const mongoose = require('mongoose');
+const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
@@ -17,59 +15,36 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// MongoDB Setup
-const MONGODB_URI = process.env.MONGODB_URI;
-if (!MONGODB_URI) {
-    console.error('❌ MONGODB_URI belum disetting di .env');
-    process.exit(1);
-}
-
-let client;
-
-mongoose.connect(MONGODB_URI).then(() => {
-    console.log('📦 Terhubung ke MongoDB Atlas!');
-    const store = new MongoStore({ mongoose: mongoose });
-    
-    // Init WhatsApp Client
-    client = new Client({
-        authStrategy: new RemoteAuth({
-            store: store,
-            backupSyncIntervalMs: 300000
-        }),
-        puppeteer: {
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
-        }
-    });
-
-    client.on('remote_session_saved', () => {
-        console.log('✅ Sesi WhatsApp berhasil disimpan ke MongoDB!');
-    });
-
-    client.on('qr', (qr) => {
-        console.log('📱 Silakan scan QR code di bawah ini menggunakan WhatsApp:');
-        qrcode.generate(qr, { small: true });
-    });
-
-    client.on('ready', () => {
-        console.log('✅ Bot WhatsApp berhasil terhubung!');
-
-        // Ambil jadwal dari .env, default jam 19:00 setiap hari
-        const schedule = process.env.CRON_SCHEDULE || '0 19 * * *';
-        console.log(`⏰ Menjadwalkan cron job pengingat pada: ${schedule}`);
-
-        cron.schedule(schedule, async () => {
-            console.log('🔄 Menjalankan pengecekan task...');
-            await checkAndSendReminders();
-        });
-
-        // Opsional: Cek langsung saat bot nyala (untuk testing)
-        // checkAndSendReminders();
-    });
-
-    client.initialize();
-}).catch(err => {
-    console.error('❌ Gagal terhubung ke MongoDB:', err.message);
+// Init WhatsApp Client
+const client = new Client({
+    authStrategy: new LocalAuth(),
+    puppeteer: {
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    }
 });
+
+client.on('qr', (qr) => {
+    console.log('📱 Silakan scan QR code di bawah ini menggunakan WhatsApp:');
+    qrcode.generate(qr, { small: true });
+});
+
+client.on('ready', () => {
+    console.log('✅ Bot WhatsApp berhasil terhubung!');
+
+    // Ambil jadwal dari .env, default jam 19:00 setiap hari
+    const schedule = process.env.CRON_SCHEDULE || '0 19 * * *';
+    console.log(`⏰ Menjadwalkan cron job pengingat pada: ${schedule}`);
+
+    cron.schedule(schedule, async () => {
+        console.log('🔄 Menjalankan pengecekan task...');
+        await checkAndSendReminders();
+    });
+
+    // Opsional: Cek langsung saat bot nyala (untuk testing)
+    checkAndSendReminders();
+});
+
+client.initialize();
 
 /**
  * Fungsi untuk mengecek task dan mengirim pengingat
@@ -146,8 +121,8 @@ async function checkAndSendReminders() {
         for (const userId in tasksByUser) {
             const { profile, tasks } = tasksByUser[userId];
 
-            let message = `🤖 *[BOT HUMAS EEPROM]*\n\n`;
-            message += `Halo *${profile.full_name}*! 👋\n`;
+            let message = `*[BOT HUMAS EEPROM]*\n\n`;
+            message += `Halo *${profile.full_name}*!\n`;
             message += `Mengingatkan ada *${tasks.length} tugas* yang harus kamu selesaikan nih:\n\n`;
 
             tasks.forEach((t, index) => {

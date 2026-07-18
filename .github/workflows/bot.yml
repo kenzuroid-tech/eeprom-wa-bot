@@ -1,0 +1,31 @@
+name: Run WhatsApp Reminder Bot
+
+on:
+  schedule:
+    # Jalan setiap hari jam 19:00 WIB (12:00 UTC)
+    - cron: '0 12 * * *'
+  workflow_dispatch: # Mengizinkan untuk dijalankan manual lewat tombol di GitHub
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20' # Menggunakan versi node terbaru
+        cache: 'npm'
+        
+    - name: Install Dependencies
+      run: npm install
+      
+    - name: Run WhatsApp Bot
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        MONGODB_URI: ${{ secrets.MONGODB_URI }}
+      run: node index.js
