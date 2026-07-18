@@ -2,3 +2,5 @@ node_modules
 .env
 .wwebjs_auth
 .wwebjs_cache
+session_base64.txt
+wa_session.zip

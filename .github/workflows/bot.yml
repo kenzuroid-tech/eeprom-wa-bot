@@ -9,16 +9,22 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 5  # Kill job kalau lebih dari 5 menit (mencegah hang karena QR)
     
+    defaults:
+      run:
+        working-directory: ./whatsapp-bot  # Semua step berjalan dari folder ini
+
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       
     - name: Setup Node.js
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@v4
       with:
         node-version: '22'
         cache: 'npm'
+        cache-dependency-path: whatsapp-bot/package-lock.json  # Lokasi package-lock.json yang benar
 
     - name: Install Chrome Dependencies
       run: |
@@ -31,9 +37,10 @@ jobs:
           libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 \
           libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 \
           libxtst6 wget xdg-utils unzip
+      working-directory: /  # Tidak perlu working-directory untuk apt-get
         
     - name: Install Dependencies
-      run: npm install
+      run: npm ci  # Lebih cepat dan konsisten daripada npm install di CI
       
     - name: Restore WhatsApp Session
       env:
@@ -44,6 +51,7 @@ jobs:
         unzip -o session.zip -d .wwebjs_auth/session/
         rm session.zip
         echo "✅ Sesi WhatsApp berhasil di-restore!"
+        ls -la .wwebjs_auth/session/ || echo "⚠️ Folder sesi kosong!"
         
     - name: Run WhatsApp Bot
       env:
