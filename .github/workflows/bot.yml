@@ -4,7 +4,7 @@ on:
   schedule:
     # Jalan setiap hari jam 19:00 WIB (12:00 UTC)
     - cron: '0 12 * * *'
-  workflow_dispatch: # Mengizinkan untuk dijalankan manual lewat tombol di GitHub
+  workflow_dispatch: # Izinkan jalan manual
 
 jobs:
   run-bot:
@@ -17,57 +17,36 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '22' # Menggunakan versi node 22 agar support WebSocket Supabase
+        node-version: '22'
         cache: 'npm'
-        
+
     - name: Install Chrome Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          ca-certificates \
-          fonts-liberation \
-          libappindicator3-1 \
-          libasound2t64 \
-          libatk-bridge2.0-0 \
-          libatk1.0-0 \
-          libc6 \
-          libcairo2 \
-          libcups2 \
-          libdbus-1-3 \
-          libexpat1 \
-          libfontconfig1 \
-          libgbm1 \
-          libgcc1 \
-          libglib2.0-0 \
-          libgtk-3-0 \
-          libnspr4 \
-          libnss3 \
-          libpango-1.0-0 \
-          libpangocairo-1.0-0 \
-          libstdc++6 \
-          libx11-6 \
-          libx11-xcb1 \
-          libxcb1 \
-          libxcomposite1 \
-          libxcursor1 \
-          libxdamage1 \
-          libxext6 \
-          libxfixes3 \
-          libxi6 \
-          libxrandr2 \
-          libxrender1 \
-          libxss1 \
-          libxtst6 \
-          lsb-release \
-          wget \
-          xdg-utils
-      
+          ca-certificates fonts-liberation libasound2t64 \
+          libatk-bridge2.0-0 libatk1.0-0 libcairo2 libcups2 \
+          libdbus-1-3 libexpat1 libfontconfig1 libgbm1 libglib2.0-0 \
+          libgtk-3-0 libnspr4 libnss3 libpango-1.0-0 libx11-6 \
+          libx11-xcb1 libxcb1 libxcomposite1 libxcursor1 libxdamage1 \
+          libxext6 libxfixes3 libxi6 libxrandr2 libxrender1 libxss1 \
+          libxtst6 wget xdg-utils unzip
+        
     - name: Install Dependencies
       run: npm install
       
+    - name: Restore WhatsApp Session
+      env:
+        WA_SESSION_BASE64: ${{ secrets.WA_SESSION_BASE64 }}
+      run: |
+        mkdir -p .wwebjs_auth/session
+        echo "$WA_SESSION_BASE64" | base64 -d > session.zip
+        unzip -o session.zip -d .wwebjs_auth/session/
+        rm session.zip
+        echo "✅ Sesi WhatsApp berhasil di-restore!"
+        
     - name: Run WhatsApp Bot
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        MONGODB_URI: ${{ secrets.MONGODB_URI }}
       run: node index.js

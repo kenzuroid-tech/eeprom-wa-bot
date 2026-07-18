@@ -1,7 +1,5 @@
 require('dotenv').config();
-const { Client, RemoteAuth } = require('whatsapp-web.js');
-const { MongoStore } = require('wwebjs-mongo');
-const mongoose = require('mongoose');
+const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -16,80 +14,37 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Sambungkan ke MongoDB lalu jalankan bot
-mongoose.connect(process.env.MONGODB_URI)
-    .then(async () => {
-        console.log('📦 Terhubung ke MongoDB Atlas!');
-        const store = new MongoStore({ mongoose: mongoose });
+// Init WhatsApp Client dengan LocalAuth
+const client = new Client({
+    authStrategy: new LocalAuth(),
+    puppeteer: {
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+    }
+});
 
-        // Init WhatsApp Client dengan RemoteAuth (sesi tersimpan di MongoDB)
-        const client = new Client({
-            authStrategy: new RemoteAuth({
-                store: store,
-                backupSyncIntervalMs: 60000 // Backup setiap 1 menit (minimum)
-            }),
-            puppeteer: {
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
-            }
-        });
+client.on('qr', (qr) => {
+    console.log('📱 Silakan scan QR code di bawah ini menggunakan WhatsApp:');
+    qrcode.generate(qr, { small: true });
+});
 
-        let sessionSaved = false;
-        client.on('remote_session_saved', async () => {
-            console.log('✅ Sesi WhatsApp berhasil disimpan ke MongoDB!');
-            sessionSaved = true;
-            // Jika bot sudah selesai kirim pesan, langsung matikan
-            if (doneReminding) {
-                console.log('👋 Sesi tersimpan. Bot mematikan diri sendiri.');
-                await client.destroy();
-                await mongoose.disconnect();
-                process.exit(0);
-            }
-        });
+client.on('ready', async () => {
+    console.log('✅ Bot WhatsApp berhasil terhubung!');
+    console.log('🔄 Menjalankan pengecekan task...');
 
-        client.on('qr', (qr) => {
-            console.log('📱 Silakan scan QR code di bawah ini menggunakan WhatsApp:');
-            qrcode.generate(qr, { small: true });
-        });
+    await checkAndSendReminders();
 
-        let doneReminding = false;
-        client.on('ready', async () => {
-            console.log('✅ Bot WhatsApp berhasil terhubung!');
-            console.log('🔄 Menjalankan pengecekan task...');
+    console.log('👋 Selesai! Bot mematikan diri sendiri.');
+    await client.destroy();
+    process.exit(0);
+});
 
-            await checkAndSendReminders(client);
-            doneReminding = true;
-
-            if (sessionSaved) {
-                // Sesi sudah tersimpan, langsung matikan
-                console.log('👋 Sesi sudah tersimpan. Bot mematikan diri sendiri.');
-                await client.destroy();
-                await mongoose.disconnect();
-                process.exit(0);
-            } else {
-                console.log('⏳ Menunggu sesi tersimpan ke MongoDB...');
-                // Timeout maksimal 2 menit jika sesi tidak tersimpan
-                setTimeout(async () => {
-                    console.log('⚠️ Timeout! Mematikan bot paksa.');
-                    await client.destroy();
-                    await mongoose.disconnect();
-                    process.exit(0);
-                }, 120000);
-            }
-        });
-
-        client.initialize();
-    })
-    .catch(err => {
-        console.error('❌ Gagal terhubung ke MongoDB:', err.message);
-        process.exit(1);
-    });
+client.initialize();
 
 /**
  * Fungsi untuk mengecek task dan mengirim pengingat
  */
-async function checkAndSendReminders(client) {
+async function checkAndSendReminders() {
     try {
-        // 1. Ambil task yang belum selesai dan memiliki deadline
         const { data: tasks, error: tasksError } = await supabase
             .from('v_tasks')
             .select('*')
@@ -104,7 +59,6 @@ async function checkAndSendReminders(client) {
             return;
         }
 
-        // 2. Ambil profil untuk mendapatkan nomor WhatsApp
         const assigneeIds = [...new Set(tasks.map(t => t.assigned_to))];
 
         const { data: profiles, error: profilesError } = await supabase
@@ -114,7 +68,6 @@ async function checkAndSendReminders(client) {
 
         if (profilesError) throw profilesError;
 
-        // Bikin map profil supaya mudah dicari
         const profileMap = {};
         profiles.forEach(p => {
             if (p.phone) {
@@ -124,7 +77,6 @@ async function checkAndSendReminders(client) {
             }
         });
 
-        // 3. Kelompokkan task berdasarkan orangnya
         const tasksByUser = {};
         const today = new Date();
 
@@ -138,20 +90,12 @@ async function checkAndSendReminders(client) {
 
             if (diffDays <= 3) {
                 if (!tasksByUser[task.assigned_to]) {
-                    tasksByUser[task.assigned_to] = {
-                        profile: userProfile,
-                        tasks: []
-                    };
+                    tasksByUser[task.assigned_to] = { profile: userProfile, tasks: [] };
                 }
-
-                tasksByUser[task.assigned_to].tasks.push({
-                    ...task,
-                    diffDays
-                });
+                tasksByUser[task.assigned_to].tasks.push({ ...task, diffDays });
             }
         });
 
-        // 4. Kirim pesan
         for (const userId in tasksByUser) {
             const { profile, tasks } = tasksByUser[userId];
 
@@ -162,10 +106,8 @@ async function checkAndSendReminders(client) {
             tasks.forEach((t, index) => {
                 const programName = t.program_name || 'Lainnya (Tanpa Program)';
                 const dateStr = new Date(t.deadline).toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-
                 let timeStatus = t.diffDays < 0 ? `❗ *Terlambat ${Math.abs(t.diffDays)} hari*` :
-                    t.diffDays === 0 ? `⚠️ *Hari ini*` :
-                        `⏳ H-${t.diffDays}`;
+                    t.diffDays === 0 ? `⚠️ *Hari ini*` : `⏳ H-${t.diffDays}`;
 
                 message += `${index + 1}. *${t.title}*\n`;
                 message += `   🏢 ${programName}\n`;
