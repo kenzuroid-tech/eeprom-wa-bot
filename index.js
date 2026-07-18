@@ -1,8 +1,9 @@
 require('dotenv').config();
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, RemoteAuth } = require('whatsapp-web.js');
+const { MongoStore } = require('wwebjs-mongo');
+const mongoose = require('mongoose');
 const qrcode = require('qrcode-terminal');
 const { createClient } = require('@supabase/supabase-js');
-const cron = require('node-cron');
 
 // Init Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -15,41 +16,58 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Init WhatsApp Client
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
-    }
-});
+// Sambungkan ke MongoDB lalu jalankan bot
+mongoose.connect(process.env.MONGODB_URI)
+    .then(async () => {
+        console.log('📦 Terhubung ke MongoDB Atlas!');
+        const store = new MongoStore({ mongoose: mongoose });
 
-client.on('qr', (qr) => {
-    console.log('📱 Silakan scan QR code di bawah ini menggunakan WhatsApp:');
-    qrcode.generate(qr, { small: true });
-});
+        // Init WhatsApp Client dengan RemoteAuth (sesi tersimpan di MongoDB)
+        const client = new Client({
+            authStrategy: new RemoteAuth({
+                store: store,
+                backupSyncIntervalMs: 300000
+            }),
+            puppeteer: {
+                args: ['--no-sandbox', '--disable-setuid-sandbox']
+            }
+        });
 
-client.on('ready', () => {
-    console.log('✅ Bot WhatsApp berhasil terhubung!');
+        client.on('remote_session_saved', () => {
+            console.log('✅ Sesi WhatsApp berhasil disimpan ke MongoDB!');
+        });
 
-    // Ambil jadwal dari .env, default jam 19:00 setiap hari
-    const schedule = process.env.CRON_SCHEDULE || '0 19 * * *';
-    console.log(`⏰ Menjadwalkan cron job pengingat pada: ${schedule}`);
+        client.on('qr', (qr) => {
+            console.log('📱 Silakan scan QR code di bawah ini menggunakan WhatsApp:');
+            qrcode.generate(qr, { small: true });
+        });
 
-    cron.schedule(schedule, async () => {
-        console.log('🔄 Menjalankan pengecekan task...');
-        await checkAndSendReminders();
+        client.on('ready', async () => {
+            console.log('✅ Bot WhatsApp berhasil terhubung di GitHub Actions!');
+            console.log('🔄 Menjalankan pengecekan task...');
+
+            await checkAndSendReminders(client);
+
+            console.log('⏳ Tunggu 15 detik agar sesi tersimpan ke MongoDB...');
+            setTimeout(async () => {
+                console.log('👋 Bot selesai, mematikan diri sendiri.');
+                await client.destroy();
+                await mongoose.disconnect();
+                process.exit(0);
+            }, 15000);
+        });
+
+        client.initialize();
+    })
+    .catch(err => {
+        console.error('❌ Gagal terhubung ke MongoDB:', err.message);
+        process.exit(1);
     });
-
-    // Opsional: Cek langsung saat bot nyala (untuk testing)
-    checkAndSendReminders();
-});
-
-client.initialize();
 
 /**
  * Fungsi untuk mengecek task dan mengirim pengingat
  */
-async function checkAndSendReminders() {
+async function checkAndSendReminders(client) {
     try {
         // 1. Ambil task yang belum selesai dan memiliki deadline
         const { data: tasks, error: tasksError } = await supabase
@@ -67,7 +85,6 @@ async function checkAndSendReminders() {
         }
 
         // 2. Ambil profil untuk mendapatkan nomor WhatsApp
-        // Ambil ID assignee yang unik
         const assigneeIds = [...new Set(tasks.map(t => t.assigned_to))];
 
         const { data: profiles, error: profilesError } = await supabase
@@ -81,27 +98,24 @@ async function checkAndSendReminders() {
         const profileMap = {};
         profiles.forEach(p => {
             if (p.phone) {
-                // Pastikan format nomor HP benar untuk WA (berawalan 62, hilangkan awalan 0, dll)
-                let phone = p.phone.replace(/\D/g, ''); // Hapus karakter non-digit
+                let phone = p.phone.replace(/\D/g, '');
                 if (phone.startsWith('0')) phone = '62' + phone.substring(1);
                 profileMap[p.id] = { ...p, wa_number: `${phone}@c.us` };
             }
         });
 
-        // 3. Kelompokkan task berdasarkan orangnya (supaya tidak di-spam 1 task = 1 pesan)
+        // 3. Kelompokkan task berdasarkan orangnya
         const tasksByUser = {};
         const today = new Date();
 
         tasks.forEach(task => {
             const userProfile = profileMap[task.assigned_to];
-            if (!userProfile) return; // Skip jika tidak ada nomor HP
+            if (!userProfile) return;
 
-            // Hitung sisa hari
             const deadline = new Date(task.deadline);
             const diffTime = deadline - today;
             const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-            // Hanya ingatkan jika deadline tinggal <= 3 hari atau sudah lewat (minus)
             if (diffDays <= 3) {
                 if (!tasksByUser[task.assigned_to]) {
                     tasksByUser[task.assigned_to] = {
